@@ -11,8 +11,8 @@
 
 ;; Structures
 
-(struct cnst (val) #:transparent) ;; represents a constant
-(struct labl (val) #:transparent) ;; represents a label
+;; (struct cnst (val) #:transparent) ;; represents a constant
+;; (struct labl (val) #:transparent) ;; represents a label
 ;; (struct dest (val) #:transparent) ;; represents a jump destination
 (struct sequ (val size) #:mutable #:transparent) ;; represents a sequence of opcodes
 
@@ -32,7 +32,9 @@
 
 (define (evmasm prog)
   (parsePROG prog)
-  (parseLABL (hash-ref hsh-sequ '__bytecode)))
+  (parseCNST '__bytecode)
+  (parseREP '__bytecode)
+  hsh-sequ)
 
 
 ;; HELPERS
@@ -52,11 +54,11 @@
     [`(def ,var ,val)
      (if (hash-has-key? hsh-cnst var)
          (error 'parsePROG "~a defined more than once" var)
-         (hash-set! hsh-cnst var (append* (pPROG-h val))))
+         (hash-set! hsh-cnst var (pPROG-h val)))
      `()]
     [`(seq ,var ,prog)
      (let ([prg (parsePROG prog)])
-       (hash-set! hsh-sequ var (sequ prg (length prg)))
+       (hash-set! hsh-sequ var (sequ prg 0))
        `((label ,var) ,(dataVal var)))]
     [x `(,x)]))
 
@@ -71,60 +73,139 @@
 ;;        #:when (hash-has-key? hsh-cnst x)
 ;;        `(,(hash-ref hsh-cnst x))]
 
-(define (parseSEQU sequ)
-  (let* ([nProg (pSEQU-h (sequ-val sequ) (box 0) (box 0))]
-         [len (length nProg)])
-    (set-sequ-val! nProg)
-    (set-sequ-size! len)))
-(define (pSEQU-h prog rep acc)
-  (match (car prog)
-    [(? number? x)
-     (let ([repe (unbox rep)]
-           [accu (unbox acc)])
-       (if (= x repe)
-           (set-box! acc (add1 accu))
-           (begin
-             (set-box! rep x)
-             (set-box! acc 1)
-             (append (repet repe accu 0)
-                     (pSEQU-h (cdr prog) rep acc)))))]
+(define (parseCNST var)
+  (let* ([sequ (hash-ref hsh-sequ var)]
+         [nProg (pCNST-h (sequ-val sequ) (hash))])
+    (set-sequ-val! sequ nProg)))
+(define (pCNST-h prog keys)
+  (append* (map (lambda (x) (pCNST-h-h x keys)) prog)))
+(define (pCNST-h-h p keys)
+  (match p
     [(? symbol? var)
      #:when (hash-has-key? hsh-cnst var)
-     (pSEQU-h (cons (hash-ref hsh-cnst var) (cdr prog))
-              rep acc)]
-    [x
-     (when (dataVal? x)
-       (parseSEQU (hash-ref hsh-sequ x)))
-     (let ([accu (unbox acc)])
-       (set-box! acc 0)
-       (append (repet (unbox rep) accu 0)
-               `(,x)
-               (pSEQU-h (cdr prog) rep acc)))]))
-(define (repet rep left cnt)
-  (let ([lim (min cnt 16)])
-    (cond
-      [(zero? left) empty]
-      [(zero? cnt) (cons rep (repet rep (sub1 left) 1))]
-      [(> left lim)
-       (cons `(,(symb-append 'dup (string->symbol (number->string lim))))
-             (repet rep (- left lim) (+ cnt lim)))]
-      [else `((,(symb-append 'dup (string->symbol (number->string left)))))])))
+     (if (hash-has-key? keys var)
+         (error 'pCNST "~a is circular" var)
+         (let* ([val (hash-ref hsh-cnst var)]
+                [nVal (pCNST-h val (hash-set keys var 1))])
+           (hash-set! hsh-cnst var nVal) nVal))]
+    [(atok op ae1 ae2)
+     (let* ([a1 (pCNST-h-h ae1 keys)]
+            [a2 (pCNST-h-h ae2 keys)]
+            [aexps `(,a1 ,a2)])
+       `(,(match aexps
+            [`(,(? number?) ,(? number?))
+             ((aopTrans op) a1 a2)]
+            [_ (atok op a1 a2)])))]
+    [_
+     (when (dataVal? p)
+       (let ([var (dataVal-sequ p)])
+         (parseCNST var)))
+     `(,p)]))
 
-(define (parseLABL sequ)
-  (pLABL-h (sequ-val sequ) 0))
+(define (parseREP var)
+  (let* ([sequ (hash-ref hsh-sequ var)]
+         [nProg (pREP-h (sequ-val sequ) 0 0)])
+    (set-sequ-val! sequ nProg)))
+(define (pREP-h prog rep acc)
+  (if (empty? prog) (repet rep acc)
+      (match (car prog)
+        [(? (or-compose `(,number? ,symbol? ,atok?)) x)
+         (if (equal? x rep)
+             (pREP-h (cdr prog) rep (add1 acc))
+             (append (repet rep acc)
+                     (pREP-h (cdr prog) x 1)))]
+        [x
+         (when (dataVal? x)
+           (let ([var (dataVal-sequ x)])
+             (parseREP var)))
+         (append (repet rep acc)
+                 `(,x)
+                 (pREP-h (cdr prog) 0 0))])))
+
+;; (define (parseSEQU var)
+;;   (let* ([sequ (hash-ref hsh-sequ var)]
+;;          [nProg (pSEQU-h (sequ-val sequ) 0 0)]
+;;          [len (length nProg)])
+;;     (set-sequ-val! sequ nProg)
+;;     (set-sequ-size! sequ len)))
+;; (define (pSEQU-h prog rep acc)
+;;   (if (empty? prog) (repet rep acc)
+;;       (match (car prog)
+;;         [(? symbol? var)
+;;          #:when (hash-has-key? hsh-cnst var)
+;;          (pSEQU-h (append (hash-ref hsh-cnst var) (cdr prog))
+;;                   rep acc)]
+;;         [(? num-or-symb? x)
+;;          (if (equal? x rep)
+;;              (pSEQU-h (cdr prog) rep (add1 acc))
+;;              (append (repet rep acc)
+;;                      (pSEQU-h (cdr prog) x 1)))]
+;;         [x
+;;          (when (dataVal? x)
+;;            (parseSEQU (dataVal-sequ x)))
+;;          (append (repet rep acc)
+;;                  `(,(match x
+;;                       [(atok op ae1 ae2)]))
+;;                  (pSEQU-h (cdr prog) 0 0))])))
+(define (repet rep cnt)
+  (if (zero? cnt) empty
+      (cons rep (build-list (sub1 cnt) (const '(dup1))))))
+
+;; (define (pSEQU-atok aexp)
+;;   (match aexp
+;;     [(? symbol? x)
+;;      #:when (hash-has-key? hsh-cnst x)
+;;      (let ([nVal (hash-ref hsh-cnst x)])
+;;        (hash-set! hsh-cnst x nVal)
+;;        (if ()))]
+;;     []))
+;; (define (pSEQU-atok-h ae)
+;;   (match ae
+;;     [(? symbol? x)
+;;      #:when (hash-has-key? hsh-cnst x)
+;;
+;;      ]
+;;    ))
+
+
+;; (if (hash-has-key? keys x)
+;;     (error 'pSEQU-atok "~a is circular" x)
+;;     (begin
+;;       (hash-set! keys x #t)
+;;       (let ([nVal (pSEQU-atok-h (hash-ref hsh-cnst x) keys)])
+;;         (hash-set! hsh-cnst x nVal))))
+
+(define ((or-compose lst) elem)
+  (ormap (lambda (x) (x elem)) lst))
+(define num-or-symb? (or-compose `(,number? ,symbol?)))
+
+;; (define (repet rep left cnt)
+;;   (let ([lim (min cnt 16)])
+;;     (cond
+;;       [(zero? left) empty]
+;;       [(zero? cnt) (cons rep (repet rep (sub1 left) 1))]
+;;       [(> left lim)
+;;        (cons `(,(symb-append 'dup (string->symbol (number->string lim))))
+;;              (repet rep (- left lim) (+ cnt lim)))]
+;;       [else `((,(symb-append 'dup (string->symbol (number->string left)))))])))
+
+(define (parseLABL var)
+  (let ([sequ (hash-ref hsh-sequ var)])
+    (pLABL-h (sequ-val sequ) 0)))
 (define (pLABL-h prog acc)
   (match (car prog)
     [`(label ,var)
      (hash-set! hsh-labl var acc)
      (pLABL-h (cdr prog) acc)]
     [(dataVal var)
+     (parseLABL var)
      (let* ([sequ (hash-ref hsh-sequ var)]
-            [prg (parseLABL sequ)]
-            [len (length prg)])
-       (unless (= (sequ-size sequ) len)
-         (hash-set! hsh-sequ-mod))
-       (cons prg (pLABL-h (cdr prog) (+ len acc))))]
+            [len (sequ-size sequ)])
+       (cons (car prog)
+             (pLABL-h (cdr prog) (+ acc len))))]
     ))
+
+(define hsh-sequ-mod (make-hash))
 
 
 ;; (define (parsePROG prog)
@@ -158,14 +239,14 @@
   (match p
     [`(dataSize ,seq) `(,(dataSize (sanVAR seq)))]
 
-    [`(def ,var ,val) `((def ,var ,(append* (evmasm-fa-h val))))]
-    [`(label ,var) `((labl ,(sanVAR var)))]
-    [`(dest ,var) `((labl ,(sanVAR var)) (jumpdest))]
-    [`(seq ,var ,p) `((seq ,(sanVAR var) ,(evmasm-func->asm p)))]
+    [`(def ,var ,val) `((def ,var ,(evmasm-fa-h val)))]
+    [`(label ,var) `((label ,(sanVAR var)))]
+    [`(dest ,var) `((label ,(sanVAR var)) (jumpdest))]
+    [`(seq ,var ,prg) `((seq ,(sanVAR var) ,(evmasm-func->asm prg)))]
 
     [`(,op ,_ ,_)
      #:when (aop? op)
-     (evmasm-func->asm `(,(aexp-op (car prog))))]
+     (evmasm-func->asm `(,(aexp-op p)))]
 
     [(list op args ...)
      (append* (reverse (cons `((,op))
