@@ -34,7 +34,19 @@
   (parsePROG prog)
   (parseCNST '__bytecode)
   (parseREP '__bytecode)
-  hsh-sequ)
+  (parseLABL '__bytecode)
+  (let ([pre-asm (asm-pre '__bytecode)])
+    (printf "Asm::")
+    (for-each ((curry printf) "~%~a") pre-asm)
+    (printf "~%Hex::~%")
+    (for-each display
+              (map (lambda (x)
+                     (let ([size (add1 (dLog x 256))])
+                       (~r x #:base 16 #:min-width (* 2 size) #:pad-string "0")))
+                   (asm pre-asm)))
+    (printf "~%Bytesize::")
+    (hash-for-each hsh-sequ (lambda (key val) (printf "~%~a: ~a" key (sequ-size val))))))
+
 
 
 ;; HELPERS
@@ -53,13 +65,16 @@
   (match p
     [`(def ,var ,val)
      (if (hash-has-key? hsh-cnst var)
-         (error 'parsePROG "~a defined more than once" var)
-         (hash-set! hsh-cnst var (pPROG-h val)))
-     `()]
+         (error 'pPROG "~a defined more than once" var)
+         (hash-set! hsh-cnst var (parsePROG val)))
+     empty]
     [`(seq ,var ,prog)
      (let ([prg (parsePROG prog)])
        (hash-set! hsh-sequ var (sequ prg 0))
-       `((label ,var) ,(dataVal var)))]
+       (parsePROG `((label ,var) ,(dataVal var))))]
+    [`(label ,var)
+     (hash-set! hsh-labl var 0)
+     `(,p)]
     [x `(,x)]))
 
 ;;       [(atok op ae1 ae2)
@@ -87,15 +102,16 @@
          (error 'pCNST "~a is circular" var)
          (let* ([val (hash-ref hsh-cnst var)]
                 [nVal (pCNST-h val (hash-set keys var 1))])
-           (hash-set! hsh-cnst var nVal) nVal))]
+           (hash-set! hsh-cnst var nVal)
+           nVal))]
     [(atok op ae1 ae2)
-     (let* ([a1 (pCNST-h-h ae1 keys)]
-            [a2 (pCNST-h-h ae2 keys)]
+     (let* ([a1 (append* (pCNST-h-h ae1 keys))]
+            [a2 (append* (pCNST-h-h ae2 keys))]
             [aexps `(,a1 ,a2)])
-       `(,(match aexps
+       (match aexps
             [`(,(? number?) ,(? number?))
-             ((aopTrans op) a1 a2)]
-            [_ (atok op a1 a2)])))]
+             `(,((aopTrans op) a1 a2))]
+            [_ (evmasm-fa-single `(,op ,a1 ,a2))]))]
     [_
      (when (dataVal? p)
        (let ([var (dataVal-sequ p)])
@@ -190,22 +206,96 @@
 ;;       [else `((,(symb-append 'dup (string->symbol (number->string left)))))])))
 
 (define (parseLABL var)
-  (let ([sequ (hash-ref hsh-sequ var)])
-    (pLABL-h (sequ-val sequ) 0)))
-(define (pLABL-h prog acc)
-  (match (car prog)
+  (let ([hsh (make-hash)])
+    (pLABL-h var hsh)
+    (unless (empty? (hash-keys hsh))
+      (hash-for-each hsh (lambda (key val)
+                           (set-sequ-size! (hash-ref hsh-sequ key) val)))
+      (parseLABL var))))
+(define (pLABL-h var hsh)
+  (let* ([sequ (hash-ref hsh-sequ var)]
+         [prog (sequ-val sequ)]
+         [set-hsh! (((curry hash-set!) hsh) var)]
+         [size (pLABL-h-h prog set-hsh! hsh 0)])
+    (when (or (not (= size (sequ-size sequ)))
+              (hash-has-key? hsh var))
+      (set-hsh! size))))
+(define (pLABL-h-h prog set-hsh! hsh acc)
+  (if (empty? prog) acc
+      (pLABL-h-h (cdr prog) set-hsh! hsh
+                 (+ acc (pLABL-single (car prog) set-hsh! hsh acc)))))
+(define (pLABL-single p set-hsh! hsh acc)
+  (match p
     [`(label ,var)
-     (hash-set! hsh-labl var acc)
-     (pLABL-h (cdr prog) acc)]
-    [(dataVal var)
-     (parseLABL var)
-     (let* ([sequ (hash-ref hsh-sequ var)]
-            [len (sequ-size sequ)])
-       (cons (car prog)
-             (pLABL-h (cdr prog) (+ acc len))))]
-    ))
+     (let ([oVal (hash-ref hsh-labl var)])
+       (unless (= oVal acc)
+         (hash-set! hsh-labl var acc)
+         (set-hsh! acc)))
+     0]
 
-(define hsh-sequ-mod (make-hash))
+    [`(,op) 1]
+    [(? number?) (push-size p)]
+
+    [(dataVal var)
+     (pLABL-h var hsh)
+     (let ([sequ (hash-ref hsh-sequ var)])
+       (sequ-size sequ))]
+    [_ (let ([val (pLABL-s-h p)])
+         (pLABL-single val set-hsh! hsh acc))]))
+(define (pLABL-s-h p)
+  (match p
+    [(? number?) p]
+    [(? symbol?) (hsh-labl-ref p)]
+    [(atok op ae1 ae2)
+     (let ([a1 (pLABL-s-h ae1)]
+           [a2 (pLABL-s-h ae2)])
+       (if (and (number? a1)
+                (number? a2))
+           ((aopTrans op) a1 a2)
+           (error 'pLABL "~a is invalid")))]
+    [(dataSize var)
+     (let ([sequ (hash-ref hsh-sequ var)])
+       (sequ-size sequ))]))
+(define (hsh-labl-ref key)
+  (hash-ref hsh-labl key (lambda () (error 'label "~a is not defined" key))))
+
+(define (push-size num)
+  (+ 2 (dLog num 256)))
+
+(define (dLog num base)
+  (dLog-h num base 0))
+(define (dLog-h num base acc)
+  (if (< num base) acc
+      (dLog-h (quotient num base) base (add1 acc))))
+
+
+(define (asm-pre var)
+  (let* ([sequ (hash-ref hsh-sequ var)]
+         [prog (sequ-val sequ)])
+    (asm-p-h prog)))
+(define (asm-p-h prog)
+  (append* (map asm-p-single prog)))
+(define (asm-p-single p)
+  (match p
+    [(dataVal var)
+     (let* ([sequ (hash-ref hsh-sequ var)]
+            [prog (sequ-val sequ)])
+       (asm-p-h prog))]
+    [_ `(,p)]))
+
+(define (asm prog)
+  (append* (map asm-single prog)))
+(define (asm-single p)
+  (match p
+    [(? number?)
+     (let* ([lg (dLog p 256)]
+            [ps (symb-append 'push (number->symbol (add1 lg)))])
+       `(,(opCode ps) ,p))]
+
+    [`(label ,_) empty]
+    [`(,op) `(,(opCode op))]
+
+    [_ (asm-single (pLABL-s-h p))]))
 
 
 ;; (define (parsePROG prog)
@@ -230,31 +320,29 @@
 (define (evmasm-func->asm prog)
   (match prog
     [(list `(dest ,var1) `(dest ,var2) x ...)
-     (cons `(label ,(sanVAR var1))
-           (evmasm-func->asm (cons `(dest ,var2) x)))]
-    ['() '()]
+     (evmasm-func->asm `((label ,var1) (dest ,var2) . ,x))]
+    [(? empty?) empty]
 
-    [_ (append (evmasm-fa-h (car prog)) (evmasm-func->asm (cdr prog)))]))
-(define (evmasm-fa-h p)
+    [_ (append (evmasm-fa-single (car prog)) (evmasm-func->asm (cdr prog)))]))
+(define (evmasm-fa-single p)
   (match p
     [`(dataSize ,seq) `(,(dataSize (sanVAR seq)))]
 
-    [`(def ,var ,val) `((def ,var ,(evmasm-fa-h val)))]
+    [`(def ,var ,val) `((def ,(sanVAR var) ,(evmasm-fa-single val)))]
     [`(label ,var) `((label ,(sanVAR var)))]
     [`(dest ,var) `((label ,(sanVAR var)) (jumpdest))]
     [`(seq ,var ,prg) `((seq ,(sanVAR var) ,(evmasm-func->asm prg)))]
 
     [`(,op ,_ ,_)
      #:when (aop? op)
-     (evmasm-func->asm `(,(aexp-op p)))]
+     (evmasm-fa-single (aexp-op p))]
 
     [(list op args ...)
-     (append* (reverse (cons `((,op))
-                             (map evmasm-func->asm
-                                  (map list args)))))]
+     (append (append* (reverse (map evmasm-fa-single args)))
+             `((,op)))]
 
-    [(? symbol? var) `(,(sanVAR var))]
-    [x `(,x)]))
+    [(? symbol?) `(,(sanVAR p))]
+    [_ `(,p)]))
 
 ;; (define (evmasm-func->asm prog)
 ;;   (define (evmasm-fa-h p)
@@ -326,11 +414,6 @@
 
     [_ prog]))
 
-;; True if op is an arithmetic operator
-(define (aop? op)
-   (ormap (lambda (x) (equal? x op))
-                        '(+ - * / %)))
-
 (define opTransHash
   (make-immutable-hash
    '((+ . add)
@@ -348,6 +431,9 @@
      (% . ,modulo))
    ))
 
+;; True if op is an arithmetic operator
+(define aop? ((curry hash-has-key?) opTransHash))
+
 (define (opTrans op)
   (hash-ref opTransHash op))
 (define (aopTrans op)
@@ -360,3 +446,57 @@
 ;; Appends to symbol
 (define (symb-append symb1 symb2)
   (string->symbol (string-append (symbol->string symb1) (symbol->string symb2))))
+
+
+(define (opCode op)
+  (hash-ref opCodes op))
+;; (define opCodes
+;;   (map (lambda (y x) (cons x y))
+;;        (build-list #x100 identity)
+;;        (append
+;;         '(stop add mul sub div sdiv mod smod addmod mulmod expt signextend)
+;;         '(lt gt slt sgt eq iszero and or xor not byte)
+;;         '(sha3)
+;;         '(address balance origin caller callvalue calldataload calldatasize calldatacopy codesize codecopy gasprice extcodesize extcodecopy returndatasize returndatacopy)
+;;         '(blockhash coinbase timestamp number difficulty gaslimit)
+;;         '(pop mload mstore mstores sload sstore jump jumpi pc msize gas jumpdest)
+;;         (map (compose ((curry symb-append) 'push)
+;;                       string->symbol number->string)
+;;              (build-list 32 add1))
+;;         (map (compose ((curry symb-append) 'dup)
+;;                       string->symbol number->string)
+;;              (build-list 16 add1))
+;;         (map (compose ((curry symb-append) 'swap)
+;;                       string->symbol number->string)
+;;              (build-list 16 add1))
+;;         (map (compose ((curry symb-append) 'log)
+;;                       string->symbol number->string)
+;;              (build-list 4 add1))
+;;         '(create call callcode return)
+;;         '(delegatecall staticcall revert invalid selfdestruct))))
+(define number->symbol (compose string->symbol number->string))
+
+(define (opCodify lst start)
+  (map (lambda (x y) (cons x y)) lst
+       (build-list (length lst) ((curry +) start))))
+
+(define opCodes
+  (make-immutable-hash
+   (append* (map (lambda (x) (opCodify (cadr x) (car x)))
+                 `([#x0 (stop add mul sub div sdiv mod smod addmod mulmod exp signextend)]
+                   [#x10 (lt gt slt sgt eq iszero and or xor not byte)]
+                   [#x20 (sha3)] [#x20 (keccak256)]
+                   [#x30 (address balance origin caller callvalue calldataload calldatasize calldatacopy codesize codecopy gasprice extcodesize extcodecopy returndatasize returndatacopy)]
+                   [#x40 (blockhash coinbase timestamp number difficulty gaslimit)]
+                   [#x50 (pop mload mstore mstores sload sstore jump jumpi pc msize gas jumpdest)]
+                   [#x60 ,(map (compose ((curry symb-append) 'push) number->symbol)
+                               (build-list 32 add1))]
+                   [#x80 ,(map (compose ((curry symb-append) 'dup) number->symbol)
+                               (build-list 16 add1))]
+                   [#x90 ,(map (compose ((curry symb-append) 'swap) number->symbol)
+                               (build-list 16 add1))]
+                   [#xa0 ,(map (compose ((curry symb-append) 'log) number->symbol)
+                               (build-list 4 add1))]
+                   [#xf0 (create call callcode return delegatecall)]
+                   [#xfa (staticcall)]
+                   [#xfd (revert invalid selfdestruct)])))))

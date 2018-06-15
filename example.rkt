@@ -12,7 +12,7 @@
 (def s_keyHash 0)
 (def s_expiration 1)
 (def s_recipient 2)
-(def s_deployment 3)
+(def s_deployer 3)
 
 (def invalid-location 2)
 
