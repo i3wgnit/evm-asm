@@ -2,81 +2,108 @@
 
 (require "evmasm.rkt")
 
-;; @harsh, this is a 1-to-1 replica of the non-optimised LLL assembly.
+;; This is a manually optimised version of the swap
 
-(define prog '(
-;; Constants
-;; =========
-(def scratch 0)
+(define constants
+  '(;; Constants
+    ;; ---------
 
-(def s_keyHash 0)
-(def s_expiration 1)
-(def s_recipient 2)
-(def s_deployer 3)
+    ;; Currently, there is no way to import files.
+    ;; Actually I lied, this is how you do it
 
-(def invalid-location 2)
 
-(def claim #xbd66528a)
-(def expire #x79599f96)
+    (def scratch 0)
 
-;; Constructor
-;; ===========
+    (def s_keyHash 0)
+    (def s_expiration 1)
+    (def s_recipient 2)
+    (def s_deployer 3)
 
-(codecopy scratch (dataSize bytecode) #x20)
-(sstore s_keyHash (mload scratch))
+    (def invalid-location 2)
 
-(codecopy scratch (+ (dataSize bytecode) #x20) #x20)
-(sstore s_expiration (mload scratch))
+    (def claim #xbd66528a)
+    (def expire #x79599f96)))
 
-(codecopy scratch (+ (dataSize bytecode) #x40) #x20)
-(sstore s_recipient (mload scratch))
+(define prog
+  (append constants
+  '(;; Constructor
+    ;; -----------
 
-(sstore s_deployer (caller))
+    ;; No different from LLL
 
-(codecopy sub_0 0 (dup1 (dataSize sub_0)))
-(return 0)
-(stop)
+    (codecopy scratch (dataSize bytecode) #x20)
+    (sstore s_keyHash (mload scratch))
 
-;; Actual contract with functions
-;; ==============================
+    (codecopy scratch (+ (dataSize bytecode) #x20) #x20)
+    (sstore s_expiration (mload scratch))
 
-(seq sub_0
-     ((jumpi loc:invalid (gt (callvalue) 0))
+    (codecopy scratch (+ (dataSize bytecode) #x40) #x20)
+    (sstore s_recipient (mload scratch))
 
-      (div (calldataload 0) (exp 2 #xe0))
-      (dup1)
-      (jumpi fun:expire (eq expire))
-      (jumpi fun:claim (eq claim))
+    (sstore s_deployer (caller))
 
-      (label loc:invalid)
-      (invalid)
+    ;; 'sub_0 is the location of sub_0
+    ;; (dataSize sub_0) is the bytesize of sub_0
+    (codecopy sub_0 0 (dup1 (dataSize sub_0)))
+    (return 0)
+    (stop)
 
-      (dest fun:expire)
-      (jumpi loc:invalid (lt (timestamp) (sload #x1)))
-      (pop (call (- (gas) #x15) (sload #x3) (balance (address)) 0 0 0 0))
-      (stop)
 
-      (dest fun:claim)
-      (dup1 (sload #x2))
+    ;; Actual contract with functions
+    ;; ------------------------------
 
-      ;; -1 item on stack
-      (jumpi loc:invalid (iszero (eq (caller))))
-      (mstore 0 (calldataload #x4))
-      (dup1 (keccak256 0 #x32))
+    ;; This is sub_0
+    (seq sub_0
+         (;; Not payable functions.
+          (jumpi loc:invalid (gt (callvalue) 0))
 
-      ;; -1 item on stack
-      (jumpi loc:invalid (iszero (eq (sload 0))))
+          ;; Two copies of hash on the stack
+          (dup1 (div (calldataload 0) (exp 2 #xe0)))
 
-      ;; mstore keccak
-      (mstore 0)
+          (jumpi fun:expire (eq expire))
 
-      ;; (sload #x2) on top of stack
-      0 0 0 0
-      (balance (address))
-      (swap5)
-      (- (gas) #x15)
-      (pop)
-      (stop)))))
+          ;; If not calling expire, then use the second copy of hash
+          (jumpi fun:claim (eq claim))
+
+          ;; >
+          ;; Labels don't add (jumpdest)
+          (label loc:invalid)
+          (invalid)
+
+          (dest fun:expire)
+          ;; continue, if timestand >= (sload 1)
+          (jumpi loc:invalid (lt (timestamp) (sload 1)))
+          (sload 3)
+          (jump call:end)
+
+          (dest fun:claim)
+
+          ;; +2 (sload 2) on the stack
+          (dup1 (sload 2))
+
+          ;; -1 item
+          (jumpi loc:invalid (iszero (eq (caller))))
+          (mstore 0 (calldataload 4))
+
+          ;; +2 (keccak256)
+          (dup1 (keccak256 0 #x20))
+
+          ;; -1 item
+          (jumpi loc:invalid (iszero (eq (sload 0))))
+
+          ;; mstore keccak
+          (mstore 0)
+
+          (dest call:end)
+          ;; remaining (sload #x?) on top of stack
+          0 0 0 0
+          (balance (address))
+
+          ;; dup (sload #x?)
+          (dup6)
+          (- (gas) #x15)
+          (call)
+          (stop))))))
 
 
 (evm-assemble prog)

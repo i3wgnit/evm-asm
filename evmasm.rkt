@@ -9,60 +9,137 @@
       (evm-assemble `((push ,prog)))))
 
 
-;; Structures
+;; --------------
+;; | Structures |
+;; --------------
 
-;; (struct cnst (val) #:transparent) ;; represents a constant
-;; (struct labl (val) #:transparent) ;; represents a label
-;; (struct dest (val) #:transparent) ;; represents a jump destination
+;; sequ is a structure that contains snippets of code and their respective bytesize
 (struct sequ (val size) #:mutable #:transparent) ;; represents a sequence of opcodes
 
+;; (dataVal sequ) represents the snippet that `sequ` stores
 (struct dataVal (sequ) #:transparent) ;; represents a dataVal token
-;; (struct dataLoc (sequ) #:transparent) ;; represents a dataLoc token
+
+;; (dataSize sequ) represents the bytesize of the snippet that `sequ` stores
 (struct dataSize (sequ) #:transparent) ;; represents a dataSize token
 
 ;; sequ is a symbol corresponding to a sequence
 
+;; These are present to allow for possible optimisation on arithmetic operations.
 (struct atok (op a1 a2) #:transparent) ;; represents an arithmetic token
 
 ;; op is a (add, sub, mul, div)
-;; ai are (number, symbol, data, op)
+;; ai are (number, symbol, dataSize, op)
 
 
-;; Main Logic
+;; --------------
+;; | Main Logic |
+;; --------------
 
 (define (evmasm prog)
   (parsePROG prog)
   (parseCNST '__bytecode)
   (parseREP '__bytecode)
   (parseLABL '__bytecode)
+
   (let ([pre-asm (asm-pre '__bytecode)])
+    ;; Pre-Assembled code
+    ;; This allows for a visualisation of all optimisations applied.
     (printf "Asm::")
     (for-each ((curry printf) "~%~a") pre-asm)
+
+    ;; Hex code
+    ;; This is the 'binaries' of the code
     (printf "~%Hex::~%")
     (for-each display
               (map (lambda (x)
                      (let ([size (add1 (dLog x 256))])
                        (~r x #:base 16 #:min-width (* 2 size) #:pad-string "0")))
                    (asm pre-asm)))
+
+    ;; Some bytesize stats for confirmation
+    ;; This gives you the needed confirmation that your burnt neurons were not to waste.
     (printf "~%Bytesize::")
     (hash-for-each hsh-sequ (lambda (key val) (printf "~%~a: ~a" key (sequ-size val))))))
 
 
+;; -----------
+;; | HELPERS |
+;; -----------
 
-;; HELPERS
 
-(define (reset)
-  (hash-clear! hsh-labl)
-  (hash-clear! hsh-cnst)
-  (hash-clear! hsh-sequ))
-(define hsh-labl (make-hash))
-(define hsh-cnst (make-hash))
-(define hsh-sequ (make-hash))
+;; Functional to assembly
+;; ----------------------
+
+;; This transforms functional-like syntax to a list of assembly stack operations.
+
+(define (evmasm-func->asm prog)
+  (match prog
+    ;; Basic optimisations::
+
+    ;; Optimises jump destinations
+    [(list `(dest ,var1) `(dest ,var2) x ...)
+     (evmasm-func->asm `((label ,var1) (dest ,var2) . ,x))]
+
+    ;; Check if empty
+    [(? empty?) empty]
+
+    [_ (append (evmasm-fa-single (car prog)) (evmasm-func->asm (cdr prog)))]))
+(define (evmasm-fa-single p)
+  (match p
+    [`(dataSize ,seq) `(,(dataSize (sanVAR seq)))]
+
+    [`(def ,var ,val) `((def ,(sanVAR var) ,(evmasm-fa-single val)))]
+    [`(label ,var) `((label ,(sanVAR var)))]
+    [`(dest ,var) `((label ,(sanVAR var)) (jumpdest))]
+    [`(seq ,var ,prg) `((seq ,(sanVAR var) ,(evmasm-func->asm prg)))]
+
+    [`(,op ,_ ,_)
+     #:when (aop? op)
+     (evmasm-fa-single (aexp-op p))]
+
+    [(list op args ...)
+     (append (append* (reverse (map evmasm-fa-single args)))
+             `((,op)))]
+
+    [(? symbol?) `(,(sanVAR p))]
+    [_ `(,p)]))
+
+;; Optimize arithmetic expressions
+(define (aexp-op prog)
+  (match prog
+    [`(,op ,ae1 ,ae2)
+     #:when (aop? op)
+     (let ([a1 (aexp-op ae1)]
+           [a2 (aexp-op ae2)])
+       (cond
+         [(or (list? a1)
+              (list? a2))
+          `(,(opTrans op) ,ae1 ,ae2)]
+         [(and (number? a1)
+               (number? a2))
+          ((aopTrans op) a1 a2)]
+         [else (atok op a1 a2)]))]
+
+    [`(dataSize ,seq) (dataSize (sanVAR seq))]
+    [(? symbol? var) (sanVAR var)]
+
+    [_ prog]))
+
+
+;; Parse Program
+;; -------------
+
+;; This is the second pass of the assembler.
+;; It populates hsh-labl and hsh-cnst.
+;; It also converts (seq ...) statements to (dataVal)
 
 (define (parsePROG prog)
   (append* (map pPROG-h prog)))
 (define (pPROG-h p)
   (match p
+    [`(label ,var)
+     (hash-set! hsh-labl var 0)
+     `(,p)]
     [`(def ,var ,val)
      (if (hash-has-key? hsh-cnst var)
          (error 'pPROG "~a defined more than once" var)
@@ -72,21 +149,14 @@
      (let ([prg (parsePROG prog)])
        (hash-set! hsh-sequ var (sequ prg 0))
        (parsePROG `((label ,var) ,(dataVal var))))]
-    [`(label ,var)
-     (hash-set! hsh-labl var 0)
-     `(,p)]
     [x `(,x)]))
 
-;;       [(atok op ae1 ae2)
-;;        (let ([a1 (append* (pPROG-h ae1))]
-;;              [a2 (append* (pPROG-h ae2))])
-;;          (if (and (number? a1)
-;;                   (number? a2))
-;;              `(,((aopTrans op) a1 a2))
-;;              (atok op a1 a2)))]
-;;       [(? symbol? x)
-;;        #:when (hash-has-key? hsh-cnst x)
-;;        `(,(hash-ref hsh-cnst x))]
+
+;; Parse Constants
+;; ---------------
+
+;; This is the third pass of the assembler.
+;; It replaces every symbol:cnst to its native value.
 
 (define (parseCNST var)
   (let* ([sequ (hash-ref hsh-sequ var)]
@@ -118,6 +188,14 @@
          (parseCNST var)))
      `(,p)]))
 
+
+;; Parse Repetition
+;; ----------------
+
+;; This is the fourth pass of the assembler.
+;; It replaces repetitions with the appropriate number of (dup1).
+;; e.g. '(1 1 1 1) -> '(1 (dup1) (dup1) (dup1) (dup1))
+
 (define (parseREP var)
   (let* ([sequ (hash-ref hsh-sequ var)]
          [nProg (pREP-h (sequ-val sequ) 0 0)])
@@ -137,73 +215,18 @@
          (append (repet rep acc)
                  `(,x)
                  (pREP-h (cdr prog) 0 0))])))
-
-;; (define (parseSEQU var)
-;;   (let* ([sequ (hash-ref hsh-sequ var)]
-;;          [nProg (pSEQU-h (sequ-val sequ) 0 0)]
-;;          [len (length nProg)])
-;;     (set-sequ-val! sequ nProg)
-;;     (set-sequ-size! sequ len)))
-;; (define (pSEQU-h prog rep acc)
-;;   (if (empty? prog) (repet rep acc)
-;;       (match (car prog)
-;;         [(? symbol? var)
-;;          #:when (hash-has-key? hsh-cnst var)
-;;          (pSEQU-h (append (hash-ref hsh-cnst var) (cdr prog))
-;;                   rep acc)]
-;;         [(? num-or-symb? x)
-;;          (if (equal? x rep)
-;;              (pSEQU-h (cdr prog) rep (add1 acc))
-;;              (append (repet rep acc)
-;;                      (pSEQU-h (cdr prog) x 1)))]
-;;         [x
-;;          (when (dataVal? x)
-;;            (parseSEQU (dataVal-sequ x)))
-;;          (append (repet rep acc)
-;;                  `(,(match x
-;;                       [(atok op ae1 ae2)]))
-;;                  (pSEQU-h (cdr prog) 0 0))])))
 (define (repet rep cnt)
   (if (zero? cnt) empty
       (cons rep (build-list (sub1 cnt) (const '(dup1))))))
 
-;; (define (pSEQU-atok aexp)
-;;   (match aexp
-;;     [(? symbol? x)
-;;      #:when (hash-has-key? hsh-cnst x)
-;;      (let ([nVal (hash-ref hsh-cnst x)])
-;;        (hash-set! hsh-cnst x nVal)
-;;        (if ()))]
-;;     []))
-;; (define (pSEQU-atok-h ae)
-;;   (match ae
-;;     [(? symbol? x)
-;;      #:when (hash-has-key? hsh-cnst x)
-;;
-;;      ]
-;;    ))
 
+;; Parse Label
+;; -----------
 
-;; (if (hash-has-key? keys x)
-;;     (error 'pSEQU-atok "~a is circular" x)
-;;     (begin
-;;       (hash-set! keys x #t)
-;;       (let ([nVal (pSEQU-atok-h (hash-ref hsh-cnst x) keys)])
-;;         (hash-set! hsh-cnst x nVal))))
-
-(define ((or-compose lst) elem)
-  (ormap (lambda (x) (x elem)) lst))
-(define num-or-symb? (or-compose `(,number? ,symbol?)))
-
-;; (define (repet rep left cnt)
-;;   (let ([lim (min cnt 16)])
-;;     (cond
-;;       [(zero? left) empty]
-;;       [(zero? cnt) (cons rep (repet rep (sub1 left) 1))]
-;;       [(> left lim)
-;;        (cons `(,(symb-append 'dup (string->symbol (number->string lim))))
-;;              (repet rep (- left lim) (+ cnt lim)))]
-;;       [else `((,(symb-append 'dup (string->symbol (number->string left)))))])))
+;; This is the fifth and upward passes of the assembler.
+;; To the contrary of what it's name implies,
+;; This step does not only parses labels.
+;; It also updates the bytesize value of all `sequ` snippets until done.
 
 (define (parseLABL var)
   (let ([hsh (make-hash)])
@@ -226,6 +249,7 @@
                  (+ acc (pLABL-single (car prog) set-hsh! hsh acc)))))
 (define (pLABL-single p set-hsh! hsh acc)
   (match p
+    ;; Label, add 0
     [`(label ,var)
      (let ([oVal (hash-ref hsh-labl var)])
        (unless (= oVal acc)
@@ -233,13 +257,19 @@
          (set-hsh! acc)))
      0]
 
+    ;; Op code, add 1
     [`(,op) 1]
+
+    ;; Number, add push size
     [(? number?) (push-size p)]
 
+    ;; dataVal, add bytesize
     [(dataVal var)
      (pLABL-h var hsh)
      (let ([sequ (hash-ref hsh-sequ var)])
        (sequ-size sequ))]
+
+    ;; Parse value, then recheck
     [_ (let ([val (pLABL-s-h p)])
          (pLABL-single val set-hsh! hsh acc))]))
 (define (pLABL-s-h p)
@@ -269,6 +299,12 @@
       (dLog-h (quotient num base) base (add1 acc))))
 
 
+;; Pre-assembler
+;; -------------
+
+;; This step replaces all (dataVal sequ) by the sequence `sequ`.
+;; This allows for a visualisation of the applied optimisations.
+
 (define (asm-pre var)
   (let* ([sequ (hash-ref hsh-sequ var)]
          [prog (sequ-val sequ)])
@@ -282,6 +318,13 @@
             [prog (sequ-val sequ)])
        (asm-p-h prog))]
     [_ `(,p)]))
+
+
+;; Assembler
+;; ---------
+
+;; This is the actual assembler.
+;; It turns asm-opcodes to actual numbers.
 
 (define (asm prog)
   (append* (map asm-single prog)))
@@ -298,121 +341,19 @@
     [_ (asm-single (pLABL-s-h p))]))
 
 
-;; (define (parsePROG prog)
-;;   (if (empty? prog) empty
-;;       (append
-;;        (match (car prog)
-;;          [`(seq ,var ,p)
-;;           (let ([prg (parsePROG p)])
-;;             (hash-set! hsh-seq var (sequ prg (length prg)))
-;;             (cons `(label ,var) prg))]
-;;
-;;          [`(def ,var ,val)
-;;           (hash-set! hsh-cnst var val)
-;;           `()]
-;;          [(? symbol? x)
-;;           #:when (hash-has-key? hsh-cnst x)
-;;           `(,(hash-ref hsh-cnst x))]
-;;
-;;          [x `(,x)])
-;;        (parsePROG (cdr prog)))))
+;; -----------------------
+;; | Helpers for helpers |
+;; -----------------------
 
-(define (evmasm-func->asm prog)
-  (match prog
-    [(list `(dest ,var1) `(dest ,var2) x ...)
-     (evmasm-func->asm `((label ,var1) (dest ,var2) . ,x))]
-    [(? empty?) empty]
+;; Allows for a quick reset of all global hash-tables
+(define (reset)
+  (hash-clear! hsh-labl)
+  (hash-clear! hsh-cnst)
+  (hash-clear! hsh-sequ))
+(define hsh-labl (make-hash))
+(define hsh-cnst (make-hash))
+(define hsh-sequ (make-hash))
 
-    [_ (append (evmasm-fa-single (car prog)) (evmasm-func->asm (cdr prog)))]))
-(define (evmasm-fa-single p)
-  (match p
-    [`(dataSize ,seq) `(,(dataSize (sanVAR seq)))]
-
-    [`(def ,var ,val) `((def ,(sanVAR var) ,(evmasm-fa-single val)))]
-    [`(label ,var) `((label ,(sanVAR var)))]
-    [`(dest ,var) `((label ,(sanVAR var)) (jumpdest))]
-    [`(seq ,var ,prg) `((seq ,(sanVAR var) ,(evmasm-func->asm prg)))]
-
-    [`(,op ,_ ,_)
-     #:when (aop? op)
-     (evmasm-fa-single (aexp-op p))]
-
-    [(list op args ...)
-     (append (append* (reverse (map evmasm-fa-single args)))
-             `((,op)))]
-
-    [(? symbol?) `(,(sanVAR p))]
-    [_ `(,p)]))
-
-;; (define (evmasm-func->asm prog)
-;;   (define (evmasm-fa-h p)
-;;     (match p
-;;       [`(dataSize ,seq) `(,(dataSize (sanVAR seq)))]
-;;
-;;       [`(def ,var ,val) `((def ,var ,(append* (evmasm-fa-h val))))]
-;;       [`(label ,var) `((labl ,(sanVAR var)))]
-;;       [`(dest ,var) `((labl ,(sanVAR var)) (jumpdest))]
-;;       [`(seq ,var ,p) `((seq ,(sanVAR var) ,(evmasm-func->asm p)))]
-;;
-;;       [`(,op ,_ ,_)
-;;        #:when (aop? op)
-;;        (evmasm-func->asm `(,(aexp-op (car prog))))]
-;;
-;;       [(list op args ...)
-;;        (append* (reverse (cons `((,op))
-;;                                (map evmasm-func->asm
-;;                                     (map list args)))))]
-;;
-;;       [(? symbol? var) `(,(sanVAR var))]
-;;       [x `(,x)]))
-;;   (append* (map evmasm-fa-h prog)))
-
-;; (define (evmasm-func->asm prog)
-;;   (if (empty? prog) empty
-;;       (append
-;;        (match (car prog)
-;;          ;; [`(dataVal ,seq) `(,(dataVal (sanVAR seq)))]
-;;          ;; [`(dataLoc ,seq) `(,(dataLoc (sanVAR seq)))]
-;;          [`(dataSize ,seq) `(,(dataSize (sanVAR seq)))]
-;;
-;;          [`(def ,var ,val) `((def ,(sanVAR var) (aexp-op val)))]
-;;          [`(label ,var) `((labl ,(sanVAR var)))]
-;;          [`(seq ,var ,p) `((seq ,(sanVAR var) ,(evmasm-func->asm p)))]
-;;
-;;          [`(,op ,_ ,_)
-;;           #:when (aop? op)
-;;           (evmasm-func->asm `(,(aexp-op (car prog))))]
-;;
-;;          [(list op args ...)
-;;           (append* (reverse (cons `((,op))
-;;                                   (map evmasm-func->asm
-;;                                        (map list args)))))]
-;;
-;;          [(? symbol? var) `(,(sanVAR var))]
-;;          [x `(,x)])
-;;        (evmasm-func->asm (cdr prog)))))
-
-;; Optimize arithmetic expressions
-(define (aexp-op prog)
-  (match prog
-    [`(,op ,ae1 ,ae2)
-     #:when (aop? op)
-     (let ([a1 (aexp-op ae1)]
-           [a2 (aexp-op ae2)])
-       (cond
-         [(or (list? a1)
-              (list? a2))
-          `(,(opTrans op) ,ae1 ,ae2)]
-         [(and (number? a1)
-               (number? a2))
-          ((aopTrans op) a1 a2)]
-         [else (atok op a1 a2)]))]
-
-    ;; [`(dataLoc ,seq) (dataLoc (sanVAR seq))]
-    [`(dataSize ,seq) (dataSize (sanVAR seq))]
-    [(? symbol? var) (sanVAR var)]
-
-    [_ prog]))
 
 (define opTransHash
   (make-immutable-hash
@@ -431,6 +372,10 @@
      (% . ,modulo))
    ))
 
+(define ((or-compose lst) elem)
+  (ormap (lambda (x) (x elem)) lst))
+
+(define num-or-symb? (or-compose `(,number? ,symbol?)))
 ;; True if op is an arithmetic operator
 (define aop? ((curry hash-has-key?) opTransHash))
 
@@ -447,39 +392,18 @@
 (define (symb-append symb1 symb2)
   (string->symbol (string-append (symbol->string symb1) (symbol->string symb2))))
 
+;; Number to symbol
+(define number->symbol (compose string->symbol number->string))
 
+;; Transform a symbol to a hex opcode
 (define (opCode op)
   (hash-ref opCodes op))
-;; (define opCodes
-;;   (map (lambda (y x) (cons x y))
-;;        (build-list #x100 identity)
-;;        (append
-;;         '(stop add mul sub div sdiv mod smod addmod mulmod expt signextend)
-;;         '(lt gt slt sgt eq iszero and or xor not byte)
-;;         '(sha3)
-;;         '(address balance origin caller callvalue calldataload calldatasize calldatacopy codesize codecopy gasprice extcodesize extcodecopy returndatasize returndatacopy)
-;;         '(blockhash coinbase timestamp number difficulty gaslimit)
-;;         '(pop mload mstore mstores sload sstore jump jumpi pc msize gas jumpdest)
-;;         (map (compose ((curry symb-append) 'push)
-;;                       string->symbol number->string)
-;;              (build-list 32 add1))
-;;         (map (compose ((curry symb-append) 'dup)
-;;                       string->symbol number->string)
-;;              (build-list 16 add1))
-;;         (map (compose ((curry symb-append) 'swap)
-;;                       string->symbol number->string)
-;;              (build-list 16 add1))
-;;         (map (compose ((curry symb-append) 'log)
-;;                       string->symbol number->string)
-;;              (build-list 4 add1))
-;;         '(create call callcode return)
-;;         '(delegatecall staticcall revert invalid selfdestruct))))
-(define number->symbol (compose string->symbol number->string))
 
 (define (opCodify lst start)
   (map (lambda (x y) (cons x y)) lst
        (build-list (length lst) ((curry +) start))))
 
+;; Defining all opcodes
 (define opCodes
   (make-immutable-hash
    (append* (map (lambda (x) (opCodify (cadr x) (car x)))
