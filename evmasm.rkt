@@ -77,7 +77,7 @@
     ;; Basic optimisations::
 
     ;; Optimises jump destinations
-    [(list `(dest ,var1) `(dest ,var2) x ...)
+    [`((dest ,var1) (dest ,var2) . ,x)
      (evmasm-func->asm `((label ,var1) (dest ,var2) . ,x))]
 
     ;; Check if empty
@@ -97,7 +97,7 @@
      #:when (aop? op)
      (evmasm-fa-single (aexp-op p))]
 
-    [(list op args ...)
+    [`(,op . ,args)
      (append (append* (reverse (map evmasm-fa-single args)))
              `((,op)))]
 

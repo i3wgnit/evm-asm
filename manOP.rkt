@@ -45,6 +45,8 @@
     ;; 'sub_0 is the location of sub_0
     ;; (dataSize sub_0) is the bytesize of sub_0
     (codecopy sub_0 0 (dup1 (dataSize sub_0)))
+
+    ;; The assembler does not actually cares how many inputs an element uses
     (return 0)
     (stop)
 
@@ -54,14 +56,17 @@
 
     ;; This is sub_0
     (seq sub_0
-         (;; Not payable functions.
-          (jumpi loc:invalid (gt (callvalue) 0))
-
+         (;; Functions declarations
           ;; Two copies of hash on the stack
           (dup1 (div (calldataload 0) (exp 2 #xe0)))
 
-          (jumpi fun:expire (eq expire))
+          ;; Payable functions
+          ;; --
 
+          ;; Not payable functions.
+          (jumpi loc:invalid (gt (callvalue) 0))
+
+          (jumpi fun:expire (eq expire))
           ;; If not calling expire, then use the second copy of hash
           (jumpi fun:claim (eq claim))
 
@@ -71,7 +76,7 @@
           (invalid)
 
           (dest fun:expire)
-          ;; continue, if timestand >= (sload 1)
+          ;; continue, if timestamp >= (sload 1)
           (jumpi loc:invalid (lt (timestamp) (sload 1)))
           (sload 3)
           (jump call:end)

@@ -2,7 +2,7 @@
 
 (require "evmasm.rkt")
 
-;; @harsh, this is a 1-to-1 replica of the non-optimised LLL assembly.
+;; This is a 1-to-1 replica of the non-optimised LLL assembly output.
 
 (define prog '(
 ;; Constants
