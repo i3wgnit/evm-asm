@@ -1,19 +1,21 @@
 # evm-asm
-This is an evm assembler written in a dialect of `Lisp` called `Scheme (Racket)`.
-I have chosen this language for it's `s-exp` parsing and **MASSIVE** pattern matching.
+This is an evm assembler written in a dialect of *Lisp* called *Scheme (Racket)*.
+I have chosen this language for it's *s-exp* parsing and **MASSIVE** pattern matching.
 
 The original code comes from [Harsh Vakharia](https://github.com/harshjv/).
 
-The `manOP` code took me about 30 minutes to optimize (after spending a while reading the yellow paper and asking people around).
+The *manOP.rkt* code took me about 30 minutes to optimize .
+> This does not account for the time I spent reading the *Ethereum* yellow paper nor me asking people around.
 
 The syntax is LLL-like, yet not really at the same time.
-You can either call this the `evm assebmler` or just `Ting` (my name).
+You can either call this the '*evm assebmler*' or just '*Ting*' (my name).
 > I have always wanted to name a program with my name, it just feels funny.
 
-Porting the assembly output of `lllc` to `Ting` is a bijective mapping.
-> See `example.rkt` and `ETHSwap.lll.asm`
+Porting the assembly output of *lllc* to *Ting* is a bijective mapping.
+> See *example.rkt* and *ETHSwap.lll.asm*
 
 # TO-DO
+* Make a full-fledged assembler instead of providing a function.
 * Rename `evm-assemble` to something more sensible.
 * Make it actually return something other than `(void)`.
 * Add benchmark for expire.
@@ -31,12 +33,12 @@ racket example.rkt
 * Solidity (reference):
     * Bytesize: 796
     * Gas cost used to deploy: 301615
-    * Gas cost used to call `claim`: 32145
+    * Gas cost used to call *claim*: 32145
 * LLL:
     * Bytesize: 226 (3.52x reduction)
     * Gas cost used to deploy: 182311 (119304 less; 1.65x reduction)
-    * Gas cost used to call `claim`: 32152 (7 more)
+    * Gas cost used to call *claim*: 32152 (7 more)
 * My thingy:
     * Bytesize: 155 (5.14x reduction)
     * Gas cost used to deploy: 166222 (135393 less; 1.81x reduction)
-    * Gas cost used to call `claim`: 23384 (8761 less)
+    * Gas cost used to call *claim*: 23384 (8761 less)
