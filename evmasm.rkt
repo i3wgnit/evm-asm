@@ -302,6 +302,7 @@
 ;; Pre-assembler
 ;; -------------
 
+;; Despite already 10^6 steps into assembly, I am calling this one the 'pre-assembler'.
 ;; This step replaces all (dataVal sequ) by the sequence `sequ`.
 ;; This allows for a visualisation of the applied optimisations.
 
