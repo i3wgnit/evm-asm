@@ -4,7 +4,8 @@ I have chosen this language for it's `s-exp` parsing and **MASSIVE** pattern mat
 
 The original code comes from [Harsh Vakharia](https://github.com/harshjv/).
 
-The `manOP` code took me about 30 minutes to optimize (after spending a while reading the yellow paper and asking people around).
+The *manOP.rkt* code took me about 30 minutes to optimize .
+> This does not account for the time I spent reading the *Ethereum* yellow paper nor me asking people around.
 
 The syntax is LLL-like, yet not really at the same time.
 You can either call this the `evm assebmler` or just `Ting` (my name).
