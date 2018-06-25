@@ -14,6 +14,12 @@ You can either call this the '*evm assebmler*' or just '*Ting*' (my name).
 Porting the assembly output of *lllc* to *Ting* is a bijective mapping.
 > See *example.rkt* and *ETHSwap.lll.asm*
 
+# Info
+* `manOP1.rkt` is optimization with `(selfdestruct)`
+* `example1.rkt` is a 1-to-1 mapping of *LLL* contract with `(selfdestruct)`
+* `example.rkt` is a 1-to-1 mapping of the original *LLL* contract
+* `manOP.rkt` is optimization of the original *LLL* contract
+
 # TO-DO
 * Make a full-fledged assembler instead of providing a function.
 * Rename `evm-assemble` to something more sensible.

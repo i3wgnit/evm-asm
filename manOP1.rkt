@@ -19,8 +19,6 @@
     (def s_recipient 2)
     (def s_deployer 3)
 
-    (def invalid-location 2)
-
     (def claim #xbd66528a)
     (def expire #x79599f96)))
 
@@ -77,34 +75,27 @@
 
           (dest fun:expire)
           ;; continue, if timestamp >= (sload 1)
-          (jumpi loc:invalid (lt (timestamp) (sload 1)))
-          (sload 3)
-          (jump call:end)
+          (jumpi loc:invalid (lt (timestamp) (sload s_expiration)))
+          (selfdestruct (sload s_deployer))
+          (stop)
 
           (dest fun:claim)
 
           ;; +2 (sload 2) on the stack
-          (dup1 (sload 2))
+          (dup1 (sload s_recipient))
 
           ;; -1 item
+          ;; not(recipient == caller)
           (jumpi loc:invalid (iszero (eq (caller))))
           (mstore 0 (calldataload 4))
 
-          ;; +2 (keccak256)
+          ;; +1 (keccak256)
           (keccak256 0 #x20)
 
           ;; -1 item
-          (jumpi loc:invalid (iszero (eq (sload 0))))
+          (jumpi loc:invalid (iszero (eq (sload s_keyHash))))
 
-          (dest call:end)
-          ;; remaining (sload #x?) on top of stack
-          0 0 0 0
-          (balance (address))
-
-          ;; dup (sload #x?)
-          (dup6)
-          (- (gas) #x15)
-          (call)
+          (selfdestruct)
           (stop))))))
 
 
