@@ -45,6 +45,6 @@ racket example.rkt
     * Gas cost used to deploy: 182311 (119304 less; 1.65x reduction)
     * Gas cost used to call *claim*: 32152 (7 more)
 * My thingy:
-    * Bytesize: 155 (5.14x reduction)
-    * Gas cost used to deploy: 166222 (135393 less; 1.81x reduction)
-    * Gas cost used to call *claim*: 23384 (8761 less)
+    * Bytesize: 151 (5.27x reduction)
+    * Gas cost used to deploy: 165205 (135393 less; 1.81x reduction)
+    * Gas cost used to call *claim*: 31856 (289 less)
