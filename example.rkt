@@ -33,7 +33,7 @@
 
 (sstore s_deployer (caller))
 
-(codecopy sub_0 0 (dup1 (dataSize sub_0)))
+(codecopy 0 sub_0 (dup1 (dataSize sub_0)))
 (return 0)
 (stop)
 
