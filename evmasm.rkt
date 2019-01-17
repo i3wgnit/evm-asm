@@ -117,16 +117,18 @@
   (match prog
     [`(,op ,ae1 ,ae2)
      #:when (aop? op)
-     (let ([a1 (append* (evmasm-fa-single ae1))]
-           [a2 (append* (evmasm-fa-single ae2))])
+     (let ([at1 (evmasm-fa-single ae1)]
+           [at2 (evmasm-fa-single ae2)])
+       (let ([a1 (if (empty? (cdr at1)) (car at1) at1)]
+             [a2 (if (empty? (cdr at2)) (car at2) at2)])
        (cond
          [(or (list? a1)
               (list? a2))
-          `(,(opTrans op) ,a1 ,a2)]
+          `(,(opTrans op) ,ae1 ,ae2)]
          [(and (number? a1)
                (number? a2))
           ((aopTrans op) a1 a2)]
-         [else (atok op a1 a2)]))]
+         [else (atok op a1 a2)])))]
 
     [_ (error 'aexp-op "~a is not a valid aexp" prog)]))
 
