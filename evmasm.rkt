@@ -2,11 +2,39 @@
 
 (provide evm-assemble)
 
-(define (evm-assemble prog)
+(define (evm-assemble prog [return (void)]
+                      [printOrder (if (void? return) '("Asm:~%" asm "~%Bytesize:~%" size "~%Hex:~%" hex) '())])
   (reset)
+  (evmasm-h prog)
+  (let* ([pre-asm (asm-pre '__bytecode)]
+         [hex (map (lambda (x)
+                     (let ([size (add1 (dLog x 256))])
+                       (~r x #:base 16 #:min-width (* 2 size) #:pad-string "0")))
+                   (asm pre-asm))])
+
+    ;; print
+    (for-each
+     (lambda (x)
+       (for-each
+        ((curry apply) printf)
+        (match x
+          ['asm (map (compose ((curry cons) "~a~%") list) pre-asm)]
+          ['size (hash-map hsh-sequ (lambda (key val) `("~a: ~a~%" ,key ,(sequ-size val))))]
+          ['hex (map list (append hex `("~%")))]
+          [(? list?) `(,x)]
+          [_ `((,x))])))
+     printOrder)
+
+    ;; return
+    (match return
+      ['asm pre-asm]
+      ['hex (string-append* "" hex)]
+      [_ (void)])))
+
+(define (evmasm-h prog)
   (if (list? prog)
-      (evmasm (evmasm-func->asm `((seq bytecode ,prog))))
-      (evm-assemble `((push ,prog)))))
+      (evmasm `((seq bytecode ,prog)))
+      (evmasm-h `(,prog))))
 
 
 ;; --------------
@@ -36,30 +64,10 @@
 ;; --------------
 
 (define (evmasm prog)
-  (parsePROG prog)
+  (parsePROG (evmasm-func->asm prog))
   (parseCNST '__bytecode)
   (parseREP '__bytecode)
-  (parseLABL '__bytecode)
-
-  (let ([pre-asm (asm-pre '__bytecode)])
-    ;; Pre-Assembled code
-    ;; This allows for a visualisation of all optimisations applied.
-    (printf "Asm::")
-    (for-each ((curry printf) "~%~a") pre-asm)
-
-    ;; Hex code
-    ;; This is the 'binaries' of the code
-    (printf "~%Hex::~%")
-    (for-each display
-              (map (lambda (x)
-                     (let ([size (add1 (dLog x 256))])
-                       (~r x #:base 16 #:min-width (* 2 size) #:pad-string "0")))
-                   (asm pre-asm)))
-
-    ;; Some bytesize stats for confirmation
-    ;; This gives you the needed confirmation that your burnt neurons were not to waste.
-    (printf "~%Bytesize::")
-    (hash-for-each hsh-sequ (lambda (key val) (printf "~%~a: ~a" key (sequ-size val))))))
+  (parseLABL '__bytecode))
 
 
 ;; -----------
@@ -109,21 +117,18 @@
   (match prog
     [`(,op ,ae1 ,ae2)
      #:when (aop? op)
-     (let ([a1 (aexp-op ae1)]
-           [a2 (aexp-op ae2)])
+     (let ([a1 (append* (evmasm-fa-single ae1))]
+           [a2 (append* (evmasm-fa-single ae2))])
        (cond
          [(or (list? a1)
               (list? a2))
-          `(,(opTrans op) ,ae1 ,ae2)]
+          `(,(opTrans op) ,a1 ,a2)]
          [(and (number? a1)
                (number? a2))
           ((aopTrans op) a1 a2)]
          [else (atok op a1 a2)]))]
 
-    [`(dataSize ,seq) (dataSize (sanVAR seq))]
-    [(? symbol? var) (sanVAR var)]
-
-    [_ prog]))
+    [_ (error 'aexp-op "~a is not a valid aexp" prog)]))
 
 
 ;; Parse Program
@@ -175,18 +180,22 @@
            (hash-set! hsh-cnst var nVal)
            nVal))]
     [(atok op ae1 ae2)
-     (let* ([a1 (append* (pCNST-h-h ae1 keys))]
-            [a2 (append* (pCNST-h-h ae2 keys))]
+     (let* ([a1 (pCNST-h-h ae1 keys)]
+            [a2 (pCNST-h-h ae2 keys)]
             [aexps `(,a1 ,a2)])
        (match aexps
-            [`(,(? number?) ,(? number?))
-             `(,((aopTrans op) a1 a2))]
-            [_ (evmasm-fa-single `(,op ,a1 ,a2))]))]
+         [`((,(? number?)) (,(? number?)))
+          `(,((aopTrans op) a1 a2))]
+         [(list-no-order (? (or-compose `(,(compose not len-0?) ,(compose list? car)))) _)
+          (append a2 a1 `(,(opTrans op)))]
+         [_ `(,(atok op a1 a2))]))]
     [_
      (when (dataVal? p)
        (let ([var (dataVal-sequ p)])
          (parseCNST var)))
      `(,p)]))
+(define (len-0? lst)
+  (empty? (cdr lst)))
 
 
 ;; Parse Repetition
@@ -270,20 +279,20 @@
        (sequ-size sequ))]
 
     ;; Parse value, then recheck
-    [_ (let ([val (pLABL-s-h p)])
+    [_ (let ([val (pLABL-s-h (if (list? p) p `(,p)))])
          (pLABL-single val set-hsh! hsh acc))]))
 (define (pLABL-s-h p)
   (match p
-    [(? number?) p]
-    [(? symbol?) (hsh-labl-ref p)]
-    [(atok op ae1 ae2)
+    [`(,(? number? n)) n]
+    [`(,(? symbol? s)) (hsh-labl-ref s)]
+    [`(,(atok op ae1 ae2))
      (let ([a1 (pLABL-s-h ae1)]
            [a2 (pLABL-s-h ae2)])
        (if (and (number? a1)
                 (number? a2))
            ((aopTrans op) a1 a2)
-           (error 'pLABL "~a is invalid")))]
-    [(dataSize var)
+           (error 'pLABL "~a is invalid" p)))]
+    [`(,(dataSize var))
      (let ([sequ (hash-ref hsh-sequ var)])
        (sequ-size sequ))]))
 (define (hsh-labl-ref key)
@@ -339,7 +348,7 @@
     [`(label ,_) empty]
     [`(,op) `(,(opCode op))]
 
-    [_ (asm-single (pLABL-s-h p))]))
+    [_ (asm-single (pLABL-s-h `(,p)))]))
 
 
 ;; -----------------------
@@ -413,7 +422,7 @@
                    [#x20 (sha3)] [#x20 (keccak256)]
                    [#x30 (address balance origin caller callvalue calldataload calldatasize calldatacopy codesize codecopy gasprice extcodesize extcodecopy returndatasize returndatacopy)]
                    [#x40 (blockhash coinbase timestamp number difficulty gaslimit)]
-                   [#x50 (pop mload mstore mstores sload sstore jump jumpi pc msize gas jumpdest)]
+                   [#x50 (pop mload mstore mstore8 sload sstore jump jumpi pc msize gas jumpdest)]
                    [#x60 ,(map (compose ((curry symb-append) 'push) number->symbol)
                                (build-list 32 add1))]
                    [#x80 ,(map (compose ((curry symb-append) 'dup) number->symbol)
@@ -421,7 +430,8 @@
                    [#x90 ,(map (compose ((curry symb-append) 'swap) number->symbol)
                                (build-list 16 add1))]
                    [#xa0 ,(map (compose ((curry symb-append) 'log) number->symbol)
-                               (build-list 4 add1))]
+                               (build-list 4 identity))]
                    [#xf0 (create call callcode return delegatecall)]
                    [#xfa (staticcall)]
-                   [#xfd (revert invalid selfdestruct)])))))
+                   [#xfd (revert invalid selfdestruct)]
+                   [#xff (suicide)])))))
